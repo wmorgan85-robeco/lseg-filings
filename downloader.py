@@ -198,12 +198,15 @@ class BulkDownloader:
         doc_ids: list[int],
         subfolder: str = "si-universe/reports/",
         storage_client_cls=None,
+        batch_size: int = 500,
     ) -> list[int]:
-        """Simplified download: just a list of doc IDs to blob storage.
+        """Download doc IDs to blob storage in batches.
 
-        Use this when you have doc IDs and want PDFs in Azure blob.
+        Processes in chunks of `batch_size` to bound driver memory.
         Returns list of failed document IDs.
         """
+        import gc
+
         if storage_client_cls is None:
             from dblib.api.storage import BlobStorageClient
             storage_client_cls = BlobStorageClient
@@ -211,38 +214,49 @@ class BulkDownloader:
         storage_loc = storage_base_url(subfolder)
         storage = storage_client_cls(storage_loc, dbutils=self.dbutils)
 
+        print(f"Downloading {len(doc_ids)} documents in batches of {batch_size}")
+
         failed_docs = []
         n_processed = 0
         started_at = monotonic()
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._download_one, doc_id): doc_id
-                for doc_id in doc_ids
-            }
+        for batch_start in range(0, len(doc_ids), batch_size):
+            batch = doc_ids[batch_start : batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(doc_ids) + batch_size - 1) // batch_size
+            print(f"\n── Batch {batch_num}/{total_batches} ({len(batch)} docs) ──")
 
-            for future in as_completed(futures):
-                doc_id = futures[future]
-                try:
-                    doc_content = future.result()
-                    storage.store(
-                        f"{doc_id}.pdf", doc_content, overwrite=True
-                    )
-                    n_processed += 1
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(self._download_one, doc_id): doc_id
+                    for doc_id in batch
+                }
 
-                    if n_processed % 50 == 0:
-                        elapsed = monotonic() - started_at
-                        print(
-                            f"Processed {n_processed}/{len(doc_ids)} "
-                            f"in {elapsed:.1f}s"
+                for future in as_completed(futures):
+                    doc_id = futures[future]
+                    try:
+                        doc_content = future.result()
+                        storage.store(
+                            f"{doc_id}.pdf", doc_content, overwrite=True
                         )
-                except Exception as exc:
-                    failed_docs.append(doc_id)
-                    print(f"Failed {doc_id}: {type(exc).__name__}: {exc}")
+                        del doc_content
+                        n_processed += 1
+
+                        if n_processed % 50 == 0:
+                            elapsed = monotonic() - started_at
+                            print(
+                                f"  Processed {n_processed}/{len(doc_ids)} "
+                                f"in {elapsed:.1f}s"
+                            )
+                    except Exception as exc:
+                        failed_docs.append(doc_id)
+                        print(f"  Failed {doc_id}: {type(exc).__name__}: {exc}")
+
+            gc.collect()
 
         elapsed = monotonic() - started_at
         print(
-            f"Done: {n_processed} downloaded, {len(failed_docs)} failed "
+            f"\nDone: {n_processed} downloaded, {len(failed_docs)} failed "
             f"in {elapsed:.1f}s"
         )
         return failed_docs
