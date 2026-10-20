@@ -251,63 +251,81 @@ class BulkDownloader:
         self,
         doc_ids: list[int],
         output_dir: str,
+        batch_size: int = 500,
     ) -> list[int]:
         """Download PDFs to a local workspace directory.
+
+        Downloads in batches to avoid OOM on large lists.
 
         Args:
             doc_ids: List of LSEG document IDs to download.
             output_dir: Absolute workspace path, e.g.
                 /Workspace/Users/.../lseg-filings/lseg_filings
+            batch_size: Number of documents per batch (default 500).
 
         Returns list of failed document IDs.
         """
+        import gc
+
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
 
+        # Skip IDs whose PDF already exists locally
+        to_download = []
+        n_skipped = 0
+        for doc_id in doc_ids:
+            dest = out / f"{doc_id}.pdf"
+            if dest.exists() and dest.stat().st_size > 0:
+                n_skipped += 1
+            else:
+                to_download.append(doc_id)
+
+        if n_skipped:
+            print(f"Skipping {n_skipped} already-downloaded files")
+        print(f"Downloading {len(to_download)} documents in batches of {batch_size}")
+
         failed_docs = []
         n_processed = 0
-        n_skipped = 0
         started_at = monotonic()
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Skip IDs whose PDF already exists locally
-            to_download = []
-            for doc_id in doc_ids:
-                dest = out / f"{doc_id}.pdf"
-                if dest.exists() and dest.stat().st_size > 0:
-                    n_skipped += 1
-                else:
-                    to_download.append(doc_id)
+        # Process in batches to keep memory bounded
+        for batch_start in range(0, len(to_download), batch_size):
+            batch = to_download[batch_start : batch_start + batch_size]
+            batch_num = batch_start // batch_size + 1
+            total_batches = (len(to_download) + batch_size - 1) // batch_size
+            print(f"\n── Batch {batch_num}/{total_batches} ({len(batch)} docs) ──")
 
-            if n_skipped:
-                print(f"Skipping {n_skipped} already-downloaded files")
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {
+                    executor.submit(self._download_one, doc_id): doc_id
+                    for doc_id in batch
+                }
 
-            futures = {
-                executor.submit(self._download_one, doc_id): doc_id
-                for doc_id in to_download
-            }
+                for future in as_completed(futures):
+                    doc_id = futures[future]
+                    try:
+                        doc_content = future.result()
+                        dest = out / f"{doc_id}.pdf"
+                        dest.write_bytes(doc_content)
+                        del doc_content  # free memory immediately
+                        n_processed += 1
 
-            for future in as_completed(futures):
-                doc_id = futures[future]
-                try:
-                    doc_content = future.result()
-                    dest = out / f"{doc_id}.pdf"
-                    dest.write_bytes(doc_content)
-                    n_processed += 1
+                        if n_processed % 50 == 0:
+                            elapsed = monotonic() - started_at
+                            print(
+                                f"  Downloaded {n_processed}/{len(to_download)} "
+                                f"in {elapsed:.1f}s"
+                            )
+                    except Exception as exc:
+                        failed_docs.append(doc_id)
+                        print(f"  Failed {doc_id}: {type(exc).__name__}: {exc}")
 
-                    if n_processed % 50 == 0:
-                        elapsed = monotonic() - started_at
-                        print(
-                            f"Downloaded {n_processed}/{len(to_download)} "
-                            f"in {elapsed:.1f}s"
-                        )
-                except Exception as exc:
-                    failed_docs.append(doc_id)
-                    print(f"Failed {doc_id}: {type(exc).__name__}: {exc}")
+            # Release memory between batches
+            gc.collect()
 
         elapsed = monotonic() - started_at
         print(
-            f"Done: {n_processed} downloaded, {n_skipped} skipped, "
+            f"\nDone: {n_processed} downloaded, {n_skipped} skipped, "
             f"{len(failed_docs)} failed in {elapsed:.1f}s"
         )
         return failed_docs

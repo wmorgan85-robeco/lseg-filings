@@ -1,10 +1,14 @@
 """LSEG / Refinitiv API client.
 
 Handles authentication, GraphQL metadata queries, and document retrieval.
-Credentials are pulled from Databricks secrets (see config.py).
+Credentials are resolved in order:
+  1. Databricks secrets scope (config.SECRETS_SCOPE), if the scope exists.
+  2. Parsed at runtime from Maria's refinitiv_api notebook in the MPU repo
+     (read-only; that notebook is NOT modified).
 """
 
 import base64
+import re
 import random
 import time
 from datetime import datetime, timedelta
@@ -20,6 +24,87 @@ from config import (
 )
 
 # ---------------------------------------------------------------------------
+# Credential resolution
+# ---------------------------------------------------------------------------
+
+_REFINITIV_API_NB_PATH = (
+    "/Repos/rob5910@robeco.nl/MPU/notebooks/Users/"
+    "rob5910@robeco.nl/ai/deepresearch/refinitiv_api"
+)
+
+_cached_creds: dict | None = None
+
+
+def _creds_from_secrets(dbutils) -> dict | None:
+    """Try reading credentials from the Databricks secrets scope.
+
+    Returns None if the scope doesn't exist or any key is missing.
+    """
+    _keys = [
+        ("client_id", "refinitiv-client-id"),
+        ("client_secret", "refinitiv-client-secret"),
+        ("username", "refinitiv-username"),
+        ("password", "refinitiv-password"),
+    ]
+    try:
+        # Check scope exists and has all required keys
+        existing = {k.key for k in dbutils.secrets.list(SECRETS_SCOPE)}
+        if not all(secret_key in existing for _, secret_key in _keys):
+            return None
+        return {
+            name: dbutils.secrets.get(scope=SECRETS_SCOPE, key=secret_key)
+            for name, secret_key in _keys
+        }
+    except BaseException:
+        return None
+
+
+def _creds_from_notebook() -> dict:
+    """Parse credentials from Maria's refinitiv_api notebook (read-only)."""
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service.workspace import ExportFormat
+
+    w = WorkspaceClient()
+    nb = w.workspace.export(path=_REFINITIV_API_NB_PATH, format=ExportFormat.SOURCE)
+    source = base64.b64decode(nb.content).decode("utf-8")
+
+    creds = {}
+    var_to_key = {
+        "client_id": "client_id",
+        "client_secret": "client_secret",
+        "username": "username",
+        "password": "password",
+    }
+    for line in source.splitlines():
+        stripped = line.strip()
+        for var, key in var_to_key.items():
+            m = re.match(rf'^{var}\s*=\s*["\'](.*)["\'](\s*#.*)?$', stripped)
+            if m:
+                creds[key] = m.group(1)
+    if len(creds) != 4:
+        raise RuntimeError(
+            f"Could not parse all 4 credentials from {_REFINITIV_API_NB_PATH} "
+            f"(found {list(creds.keys())})"
+        )
+    return creds
+
+
+def _resolve_creds(dbutils) -> dict:
+    """Return credentials, caching after first successful resolution."""
+    global _cached_creds
+    if _cached_creds is not None:
+        return _cached_creds
+
+    # Try secrets scope first
+    creds = _creds_from_secrets(dbutils)
+    if creds is None:
+        # Fall back to reading Maria's notebook
+        creds = _creds_from_notebook()
+    _cached_creds = creds
+    return creds
+
+
+# ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
 
@@ -28,10 +113,11 @@ def get_access_token(dbutils) -> tuple[str, datetime]:
 
     Returns (access_token, expires_at).
     """
-    client_id = dbutils.secrets.get(scope=SECRETS_SCOPE, key="refinitiv-client-id")
-    client_secret = dbutils.secrets.get(scope=SECRETS_SCOPE, key="refinitiv-client-secret")
-    username = dbutils.secrets.get(scope=SECRETS_SCOPE, key="refinitiv-username")
-    password = dbutils.secrets.get(scope=SECRETS_SCOPE, key="refinitiv-password")
+    creds = _resolve_creds(dbutils)
+    client_id = creds["client_id"]
+    client_secret = creds["client_secret"]
+    username = creds["username"]
+    password = creds["password"]
 
     form_data = {
         "username": username,
