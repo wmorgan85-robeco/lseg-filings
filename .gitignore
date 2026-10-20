@@ -3,3 +3,16 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 *.egg-info/
+manifests/
+copy_manifest_*.csv
+
+# Downloaded filings — large binaries, never commit
+lseg_filings/*.pdf
+lseg_filings/*.txt
+lseg_filings/*.html
+lseg_filings/*.htm
+lseg_filings/*.xml
+lseg_filings/*.doc
+lseg_filings/*.docx
+lseg_filings/*.xls
+lseg_filings/*.xlsx

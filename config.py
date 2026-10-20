@@ -35,6 +35,41 @@ def storage_base_url(subfolder: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Publishing (see publisher.py)
+# The pipeline writes to a working container (aisearch / datascientist).
+# Downstream consumers can only read `sistrategist`, so finished PDFs are
+# copied there. Same storage account unless --dest-account is given.
+# ---------------------------------------------------------------------------
+PUBLISH_CONTAINER = "sistrategist"
+PUBLISH_SUBFOLDER = "si-universe/reports/"
+PUBLISH_ALLOWED_SOURCES = ("aisearch", "datascientist")
+PUBLISH_MAX_WORKERS = 8
+
+# Optional service principal for publishing from Databricks, stored in
+# SECRETS_SCOPE. Needs Storage Blob Data Reader on the source container and
+# Storage Blob Data Contributor on `sistrategist`. If absent, publisher.py
+# falls back to DefaultAzureCredential (e.g. `az login` locally).
+AZURE_SP_SECRET_KEYS = {
+    "tenant_id": "azure-tenant-id",
+    "client_id": "azure-client-id",
+    "client_secret": "azure-client-secret",
+}
+
+# ---------------------------------------------------------------------------
+# Input: Doc IDs source file
+# ---------------------------------------------------------------------------
+DOC_IDS_EXCEL_PATH = (
+    "abfss://datascientist@rbqrrhippoprd.dfs.core.windows.net/"
+    "users/mw/lseg_filings/LSEG_company_download_list.xlsx"
+)
+
+# ---------------------------------------------------------------------------
+# Local output (within the project repo, gitignored)
+# ---------------------------------------------------------------------------
+# Resolved at runtime relative to the notebook; see pipeline.py
+LOCAL_OUTPUT_SUBFOLDER = "lseg_filings"
+
+# ---------------------------------------------------------------------------
 # Download concurrency
 # ---------------------------------------------------------------------------
 MAX_WORKERS = 4

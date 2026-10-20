@@ -7,8 +7,10 @@ Usage from a Databricks notebook:
 """
 
 import base64
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from pathlib import Path
 from threading import Lock
 from time import monotonic, sleep
 
@@ -197,9 +199,9 @@ class BulkDownloader:
         subfolder: str = "si-universe/reports/",
         storage_client_cls=None,
     ) -> list[int]:
-        """Simplified download: just a list of doc IDs, no metadata.
+        """Simplified download: just a list of doc IDs to blob storage.
 
-        Use this when you have a file with doc IDs and just want the PDFs.
+        Use this when you have doc IDs and want PDFs in Azure blob.
         Returns list of failed document IDs.
         """
         if storage_client_cls is None:
@@ -242,5 +244,70 @@ class BulkDownloader:
         print(
             f"Done: {n_processed} downloaded, {len(failed_docs)} failed "
             f"in {elapsed:.1f}s"
+        )
+        return failed_docs
+
+    def download_to_local(
+        self,
+        doc_ids: list[int],
+        output_dir: str,
+    ) -> list[int]:
+        """Download PDFs to a local workspace directory.
+
+        Args:
+            doc_ids: List of LSEG document IDs to download.
+            output_dir: Absolute workspace path, e.g.
+                /Workspace/Users/.../lseg-filings/lseg_filings
+
+        Returns list of failed document IDs.
+        """
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+
+        failed_docs = []
+        n_processed = 0
+        n_skipped = 0
+        started_at = monotonic()
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Skip IDs whose PDF already exists locally
+            to_download = []
+            for doc_id in doc_ids:
+                dest = out / f"{doc_id}.pdf"
+                if dest.exists() and dest.stat().st_size > 0:
+                    n_skipped += 1
+                else:
+                    to_download.append(doc_id)
+
+            if n_skipped:
+                print(f"Skipping {n_skipped} already-downloaded files")
+
+            futures = {
+                executor.submit(self._download_one, doc_id): doc_id
+                for doc_id in to_download
+            }
+
+            for future in as_completed(futures):
+                doc_id = futures[future]
+                try:
+                    doc_content = future.result()
+                    dest = out / f"{doc_id}.pdf"
+                    dest.write_bytes(doc_content)
+                    n_processed += 1
+
+                    if n_processed % 50 == 0:
+                        elapsed = monotonic() - started_at
+                        print(
+                            f"Downloaded {n_processed}/{len(to_download)} "
+                            f"in {elapsed:.1f}s"
+                        )
+                except Exception as exc:
+                    failed_docs.append(doc_id)
+                    print(f"Failed {doc_id}: {type(exc).__name__}: {exc}")
+
+        elapsed = monotonic() - started_at
+        print(
+            f"Done: {n_processed} downloaded, {n_skipped} skipped, "
+            f"{len(failed_docs)} failed in {elapsed:.1f}s"
         )
         return failed_docs
