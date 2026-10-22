@@ -2,12 +2,17 @@
 
 Handles authentication, GraphQL metadata queries, and document retrieval.
 Credentials are resolved in order:
-  1. Databricks secrets scope (config.SECRETS_SCOPE), if the scope exists.
-  2. Parsed at runtime from Maria's refinitiv_api notebook in the MPU repo
-     (read-only; that notebook is NOT modified).
+  1. Environment variables REFINITIV_CLIENT_ID / _CLIENT_SECRET / _USERNAME /
+     _PASSWORD, if all four are set.
+  2. Databricks secrets scope (config.SECRETS_SCOPE), if running on Databricks
+     and the scope exists.
+  3. Parsed at runtime from Maria's refinitiv_api notebook in the MPU repo
+     (read-only; that notebook is NOT modified). Locally this uses the
+     Databricks CLI profile in ~/.databrickscfg.
 """
 
 import base64
+import os
 import re
 import random
 import time
@@ -33,6 +38,19 @@ _REFINITIV_API_NB_PATH = (
 )
 
 _cached_creds: dict | None = None
+
+
+def _creds_from_env() -> dict | None:
+    """Read credentials from REFINITIV_* environment variables, if set.
+
+    The client secret may be absent: the password grant only needs the app key.
+    """
+    names = ("client_id", "username", "password")
+    values = {n: os.environ.get(f"REFINITIV_{n.upper()}") for n in names}
+    if not all(values.values()):
+        return None
+    values["client_secret"] = os.environ.get("REFINITIV_CLIENT_SECRET", "")
+    return values
 
 
 def _creds_from_secrets(dbutils) -> dict | None:
@@ -89,14 +107,15 @@ def _creds_from_notebook() -> dict:
     return creds
 
 
-def _resolve_creds(dbutils) -> dict:
+def _resolve_creds(dbutils=None) -> dict:
     """Return credentials, caching after first successful resolution."""
     global _cached_creds
     if _cached_creds is not None:
         return _cached_creds
 
-    # Try secrets scope first
-    creds = _creds_from_secrets(dbutils)
+    creds = _creds_from_env()
+    if creds is None and dbutils is not None:
+        creds = _creds_from_secrets(dbutils)
     if creds is None:
         # Fall back to reading Maria's notebook
         creds = _creds_from_notebook()
@@ -108,7 +127,7 @@ def _resolve_creds(dbutils) -> dict:
 # Authentication
 # ---------------------------------------------------------------------------
 
-def get_access_token(dbutils) -> tuple[str, datetime]:
+def get_access_token(dbutils=None) -> tuple[str, datetime]:
     """Obtain an OAuth2 access token via the Refinitiv password grant.
 
     Returns (access_token, expires_at).
@@ -297,6 +316,10 @@ def fetch_reports_info(access_token: str, query: str) -> dict:
 # Document retrieval
 # ---------------------------------------------------------------------------
 
+class NoPdfError(RuntimeError):
+    """The document exists but LSEG offers no PDF rendition of it."""
+
+
 def get_retrieval_url(access_token: str, doc_id: int, max_attempts: int = 4) -> str:
     """Resolve a document ID to a signed PDF download URL."""
     payload = request_json_retry(
@@ -322,7 +345,10 @@ def get_retrieval_url(access_token: str, doc_id: int, max_attempts: int = 4) -> 
             if signed_url:
                 return signed_url
 
-    raise RuntimeError(f"No PDF URL found for document {doc_id}")
+    available = sorted(
+        {d.get("mimeType") for d in payload.values() if isinstance(d, dict)} - {None}
+    )
+    raise NoPdfError(f"no PDF for document {doc_id}; available: {', '.join(available) or 'none'}")
 
 
 # ---------------------------------------------------------------------------
