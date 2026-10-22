@@ -49,7 +49,9 @@ op run --env-file .env.op -- uv run run_local.py --execute            # 3. every
 ```
 
 Defaults: doc IDs from `DOC_IDS_EXCEL_PATH`, target
-`datascientist/users/mw/lseg_filings/reports/`. Existing blobs are skipped and never
+`sistrategist/si-universe-oct-2026/` (the consumer-facing container, so no
+publish step is needed). Use `--container` / `--prefix` to stage elsewhere.
+Existing blobs are skipped and never
 overwritten, so re-runs resume. Each run writes `manifests/download_*.csv` with
 one row per document: `copied`, `skipped_exists`, `no_pdf` (LSEG only has
 txt/xhtml for it), `failed` (e.g. 404 from LSEG) or `not_attempted`.
@@ -74,23 +76,25 @@ For the complete pipeline starting from a Robeco universe file:
 
 ## Publishing to `sistrategist`
 
-The pipeline writes to a working container (`datascientist` by default, or `aisearch`).
-Downstream consumers can only read `sistrategist`, so finished PDFs are
-copied there by `publisher.py`, preserving sub-folders and blob metadata.
+Downstream consumers can only read `sistrategist`. The pipeline now
+downloads there directly. `publisher.py` is only needed for PDFs staged in
+another container (`aisearch` or `datascientist`). It copies them across,
+preserving sub-folders and blob metadata.
 
 **In Databricks:** set the `publish` widget in `pipeline` to `dry_run`
 (default), check the manifest, then `execute` (optionally with
 `publish_limit` for a trial). The manifest is saved to
-`datascientist/_publish_manifests/`.
+`<output container>/_publish_manifests/`.
 
 **Locally** (uses `az login`; dependencies declared inline for `uv`):
 
 ```powershell
 az login
-uv run publisher.py                                        # 1. dry run
-uv run publisher.py --execute --limit 5                    # 2. small trial
-uv run publisher.py --execute --dest-prefix si-universe-oct-2026/   # 3. full copy
-# --source-container aisearch   to publish from aisearch instead
+$src = "--source-container datascientist --source-prefix users/mw/lseg_filings/reports/"
+uv run publisher.py $src.Split()                                # 1. dry run
+uv run publisher.py $src.Split() --execute --limit 5            # 2. small trial
+uv run publisher.py $src.Split() --execute --workers 32         # 3. full copy
+# default destination: sistrategist/si-universe-oct-2026/ (--dest-prefix to change)
 ```
 
 Manifests are written to `manifests/` (git-ignored).
@@ -131,5 +135,5 @@ service principal with those roles in the `lseg-filings` scope
 
 - Rate limited to 4 requests/second with 4 concurrent workers
 - Token auto-refreshes before expiry
-- Downloads are stored to Azure Blob Storage at `abfss://datascientist@rbqrrhippoprd.dfs.core.windows.net/users/mw/lseg_filings/reports/`, then published to `sistrategist` for consumers
+- Downloads are stored directly in Azure Blob Storage at `abfss://sistrategist@rbqrrhippoprd.dfs.core.windows.net/si-universe-oct-2026/`, where consumers read them
 - The ranking logic prioritises English documents, larger page counts, and more recent filings

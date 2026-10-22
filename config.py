@@ -25,8 +25,9 @@ RETRIEVAL_API_KEY = "155d9dbf-f0ac-46d9-8b77-f7f6dcd238f8"
 # Azure Blob Storage
 # ---------------------------------------------------------------------------
 STORAGE_ACCOUNT_NAME = "rbqrrhippoprd"
-STORAGE_CONTAINER = "datascientist"
-REPORT_SUBFOLDER = "users/mw/lseg_filings/reports/"
+# Downloads go straight to the consumer-facing container; no publish step needed
+STORAGE_CONTAINER = "sistrategist"
+REPORT_SUBFOLDER = "si-universe-oct-2026/"
 
 
 def storage_base_url(subfolder: str | None = None) -> str:
@@ -37,13 +38,13 @@ def storage_base_url(subfolder: str | None = None) -> str:
 
 # ---------------------------------------------------------------------------
 # Publishing (see publisher.py)
-# The pipeline writes to a working container (aisearch / datascientist).
-# Downstream consumers can only read `sistrategist`, so finished PDFs are
-# copied there. Same storage account unless --dest-account is given.
+# Downstream consumers can only read `sistrategist`. The pipeline now writes
+# there directly; publishing is for PDFs staged elsewhere (aisearch /
+# datascientist). Same storage account unless --dest-account is given.
 # ---------------------------------------------------------------------------
 PUBLISH_CONTAINER = "sistrategist"
-PUBLISH_SUBFOLDER = "si-universe/reports/"
-PUBLISH_ALLOWED_SOURCES = ("aisearch", "datascientist")
+PUBLISH_SUBFOLDER = "si-universe-oct-2026/"
+PUBLISH_ALLOWED_SOURCES = ("aisearch", "datascientist", "sistrategist")
 PUBLISH_MAX_WORKERS = 8
 
 # Optional service principal for publishing from Databricks, stored in
