@@ -42,9 +42,11 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
-from time import monotonic
+from threading import Lock
+from time import monotonic, time
 
 from azure.core.exceptions import (
+    ClientAuthenticationError,
     HttpResponseError,
     ResourceExistsError,
     ResourceNotFoundError,
@@ -88,13 +90,41 @@ class ManifestRow:
 # Credentials
 # ---------------------------------------------------------------------------
 
+class _SharedTokenCredential:
+    """Thread-safe token cache around another credential.
+
+    Without it every worker thread asks the inner credential for a token at
+    once; for ``az login`` that means dozens of concurrent ``az`` processes,
+    which time out on Windows ("Failed to invoke the Azure CLI").
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._lock = Lock()
+        self._tokens = {}
+
+    def get_token(self, *scopes, **kwargs):
+        if kwargs.get("claims"):  # a claims challenge needs a fresh token
+            return self._inner.get_token(*scopes, **kwargs)
+        with self._lock:
+            token = self._tokens.get(scopes)
+            if token is None or token.expires_on - 300 < time():
+                token = self._inner.get_token(*scopes, **kwargs)
+                self._tokens[scopes] = token
+            return token
+
+
 def get_credential(dbutils=None):
-    """Return an Azure credential.
+    """Return an Azure credential, shared safely across worker threads.
 
     On Databricks (``dbutils`` given), use the service principal stored in the
     ``SECRETS_SCOPE`` secrets scope if present. Otherwise fall back to
     ``DefaultAzureCredential`` (``az login`` locally, managed identity, env).
     """
+    return _SharedTokenCredential(_base_credential(dbutils))
+
+
+def _base_credential(dbutils=None):
     from azure.identity import ClientSecretCredential, DefaultAzureCredential
 
     if dbutils is not None:
@@ -151,8 +181,10 @@ def _copy_one(src_bc, dst_bc, blob, bearer_token):
         return COPIED, ""
     except ResourceExistsError:
         return SKIPPED_EXISTS, "target appeared during run"
+    except ClientAuthenticationError:
+        raise  # no token / no access: streaming would fail the same way
     except HttpResponseError as exc:
-        reason = f"server-side refused ({exc.status_code} {exc.error_code})"
+        reason = f"server-side refused ({exc.status_code} {getattr(exc, 'error_code', None)})"
 
     # Fallback: stream through the caller. Still overwrite=False.
     cs = blob.content_settings

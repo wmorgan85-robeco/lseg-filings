@@ -1,6 +1,7 @@
 """Configuration for the LSEG filings pipeline.
 
-Credentials are read from Databricks secrets. Set them up once:
+Refinitiv credentials: see lseg_api.py for the resolution order (env vars,
+Databricks secrets, then Maria's refinitiv_api notebook). Optional secrets:
     databricks secrets put-secret lseg-filings refinitiv-client-id
     databricks secrets put-secret lseg-filings refinitiv-client-secret
     databricks secrets put-secret lseg-filings refinitiv-username
@@ -24,8 +25,8 @@ RETRIEVAL_API_KEY = "155d9dbf-f0ac-46d9-8b77-f7f6dcd238f8"
 # Azure Blob Storage
 # ---------------------------------------------------------------------------
 STORAGE_ACCOUNT_NAME = "rbqrrhippoprd"
-STORAGE_CONTAINER = "aisearch"
-REPORT_SUBFOLDER = "si-universe/reports/"
+STORAGE_CONTAINER = "datascientist"
+REPORT_SUBFOLDER = "users/mw/lseg_filings/reports/"
 
 
 def storage_base_url(subfolder: str | None = None) -> str:
@@ -62,12 +63,6 @@ DOC_IDS_EXCEL_PATH = (
     "abfss://datascientist@rbqrrhippoprd.dfs.core.windows.net/"
     "users/mw/lseg_filings/LSEG_company_download_list.xlsx"
 )
-
-# ---------------------------------------------------------------------------
-# Local output (within the project repo, gitignored)
-# ---------------------------------------------------------------------------
-# Resolved at runtime relative to the notebook; see pipeline.py
-LOCAL_OUTPUT_SUBFOLDER = "lseg_filings"
 
 # ---------------------------------------------------------------------------
 # Download concurrency
